@@ -3,24 +3,33 @@
 Resolves project root from CLAUDE_PROJECT_DIR (Claude Code hook env),
 falling back to current working directory. Per-project artifacts live
 under <project_root>/.scribe/. Shared notes, read in every project, live
-in SCRIBE_SHARED_DIR (default ~/.claude/scribe/shared).
+in SCRIBE_SHARED_DIR (default ~/.claude/scribe/shared). The rules themselves
+are in _scribe_core.Dirs, which the import-light PreToolUse hook uses directly.
 """
 import os
 from pathlib import Path
 
-PROJECT_ROOT = Path(os.environ.get("CLAUDE_PROJECT_DIR", os.getcwd()))
-ROOT = PROJECT_ROOT / ".scribe"
-KNOWLEDGE_DIR = ROOT / "knowledge"
+from _scribe_core import Dirs
+
+DIRS = Dirs()
+PROJECT_ROOT = Path(DIRS.project)
+ROOT = Path(DIRS.scribe)
+KNOWLEDGE_DIR = Path(DIRS.knowledge)
 LOG_FILE = ROOT / "hook.log"
 TURN_COUNT_FILE = ROOT / "turn_count"
 
-SHARED_DIR = Path(os.environ.get("SCRIBE_SHARED_DIR")
-                  or Path.home() / ".claude" / "scribe" / "shared").expanduser()
+SHARED_DIR = Path(DIRS.shared)
 
-try:
-    CATALOG_BUDGET = int(os.environ.get("SCRIBE_CATALOG_BUDGET", "6000"))
-except ValueError:
-    CATALOG_BUDGET = 6000
+
+def _int_env(name: str, default: int) -> int:
+    try:
+        return int(os.environ.get(name, str(default)))
+    except ValueError:
+        return default
+
+
+CATALOG_BUDGET = _int_env("SCRIBE_CATALOG_BUDGET", 6000)  # map + titles at session start
+MAP_BUDGET = _int_env("SCRIBE_MAP_BUDGET", 1500)          # the project map's share of it
 
 
 def ensure_dirs() -> None:

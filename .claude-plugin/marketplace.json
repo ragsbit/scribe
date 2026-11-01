@@ -1,6 +1,6 @@
 {
   "name": "scribe",
-  "description": "Agentic Skill Improve Loop — reflect every 10 turns, route findings to memory, project or shared notes, CLAUDE.md, tests or skills; list note titles at session start",
+  "description": "Agentic Skill Improve Loop — reflect every 10 turns and route findings to memory, project or shared notes, CLAUDE.md, tests or skills; a project map and note titles at session start; note triggers that warn on or block a matching tool call",
   "owner": {
     "name": "Ragsbit",
     "url": "https://github.com/ragsbit"
@@ -8,8 +8,8 @@
   "plugins": [
     {
       "name": "scribe",
-      "description": "Agentic Skill Improve Loop — reflect every 10 turns, route findings to memory, project or shared notes, CLAUDE.md, tests or skills; list note titles at session start",
-      "version": "0.3.0",
+      "description": "Agentic Skill Improve Loop — reflect every 10 turns and route findings to memory, project or shared notes, CLAUDE.md, tests or skills; a project map and note titles at session start; note triggers that warn on or block a matching tool call",
+      "version": "0.4.0",
       "source": "./",
       "author": {
         "name": "Ragsbit"

@@ -1,20 +1,26 @@
-"""SessionStart hook — reset turn_count, then list note titles (catalog), v0.2.0.
+"""SessionStart hook — reset turn_count, then put the project map and the note
+titles (catalog) in front of the session, v0.4.0.
 
 Memory: handled by Claude Code auto-memory (personal).
 Knowledge: whole notes are not injected (until 0.1.2 that grew past 200KB and
-front-loaded every session). Instead the hook lists one line per note: shared
-notes (all projects, SHARED_DIR) first, then this project's notes, within
-CATALOG_BUDGET characters. Claude opens a note with Read when its title fits the
-task. When the list does not fit, descriptions get shorter, then the project's
-titles give way to one pointer line (count + where to search).
+front-loaded every session). Within CATALOG_BUDGET characters the hook puts:
+1. the project map (.scribe/knowledge/MAP.md: key facts, then situation →
+   search words → note), cut to MAP_BUDGET;
+2. one line per note: shared notes (all projects, SHARED_DIR) first, then this
+   project's. Notes whose triggers fired in the last 30 days come first, then
+   the newest. When the list does not fit, descriptions get shorter, then the
+   project's titles give way to one pointer line (count + where to search);
+3. a line when a trigger does not compile, and one when /scribe-garden is due.
+It also refreshes the trigger cache that the PreToolUse hook reads.
 """
 import json
 import logging
 import sys
 from pathlib import Path
 
-from _scribe_paths import (CATALOG_BUDGET, KNOWLEDGE_DIR, LOG_FILE, PROJECT_ROOT,
-                           SHARED_DIR, TURN_COUNT_FILE, ensure_dirs)
+import _scribe_core as core
+from _scribe_paths import (CATALOG_BUDGET, DIRS, KNOWLEDGE_DIR, LOG_FILE, MAP_BUDGET,
+                           PROJECT_ROOT, SHARED_DIR, TURN_COUNT_FILE, ensure_dirs)
 
 ensure_dirs()
 logging.basicConfig(filename=str(LOG_FILE), level=logging.INFO,
@@ -25,72 +31,52 @@ except Exception:
     pass
 
 INDEX_FILES = ("docs/INDEX.md", ".scribe/knowledge/INDEX.md")
-SKIP = {"INDEX.MD", "LOG.MD"}
-FOLDED = (">", ">-", "|", "|-")
 # (shared description width, project description width); 0 = title only,
 # None = one pointer line instead of the project's titles. Tried in order.
 LEVELS = [(150, 150), (150, 60), (60, 60), (60, 0), (150, None), (60, None), (0, None)]
+HEAD = ("## scribe notes (titles only)\n"
+        "Open a note with Read when its title fits the task; a title missing here can still "
+        "be found with grep or /scribe-search. A note's status claims (\"fixed\", \"works\", a version) date from "
+        "its `updated:`; check them against the code before acting on them.")
+TRIGGER_HEAD = (" Notes with `triggers:` also speak up when a tool call matches them (a warning, "
+                "or a block with `enforce: block`); [N hits] counts that over the last 30 days.")
 
 
-def _parse(text: str) -> tuple:
-    """Top-level front matter keys and the body lines."""
-    lines = text.splitlines()
-    if not lines or lines[0].strip() != "---":
-        return {}, lines
-    meta, folded = {}, None
-    for i, line in enumerate(lines[1:], 1):
-        if line.strip() == "---":
-            break
-        if line[:1] in (" ", "\t"):
-            if folded:
-                meta[folded] = (meta[folded] + " " + line.strip()).strip()
-            continue
-        folded = None
-        key, sep, value = line.partition(":")
-        if not sep:
-            continue
-        key, value = key.strip(), value.strip()
-        if value in FOLDED:
-            meta[key], folded = "", key
-        else:
-            meta[key] = value.strip("\"'")
-    else:
-        return {}, lines
-    return meta, lines[i + 1:]
-
-
-def read_notes(folder: Path) -> list:
+def read_notes(folder: Path, hits: dict) -> list:
     notes = []
     if not folder.is_dir():
         return notes
     for f in folder.glob("*.md"):
-        if f.name.upper() in SKIP:
+        if f.name.upper() in core.SKIP:
             continue
         try:
             text = f.read_text(encoding="utf-8")
         except (OSError, UnicodeDecodeError):
             continue
-        meta, body = _parse(text)
+        meta, body = core.parse(text)
         first = next((s.strip().lstrip("#").strip() for s in body
                       if s.strip() and not s.strip().startswith("```")), "")
         desc = meta.get("description") or meta.get("title") or first
         notes.append({
-            "name": meta.get("name") or f.stem,
-            "desc": " ".join(desc.split()),
+            "name": str(meta.get("name") or f.stem),
+            "desc": " ".join(str(desc).split()),
             "updated": str(meta.get("updated") or meta.get("date") or ""),
             "mtime": f.stat().st_mtime,
+            "hits": hits.get(f.stem, 0),
         })
-    notes.sort(key=lambda n: (n["updated"], n["mtime"]), reverse=True)
+    notes.sort(key=lambda n: (n["hits"], n["updated"], n["mtime"]), reverse=True)
     return notes
 
 
 def _line(note: dict, width: int) -> str:
+    hits = note.get("hits")
+    mark = f" [{hits} hit{'s' if hits > 1 else ''}]" if hits else ""
     desc = note["desc"]
     if not width or not desc or desc == note["name"]:
-        return f"- {note['name']}"
+        return f"- {note['name']}{mark}"
     if len(desc) > width:
         desc = desc[:width - 1].rstrip() + "…"
-    return f"- {note['name']} — {desc}"
+    return f"- {note['name']}{mark} — {desc}"
 
 
 def _label(path: Path) -> str:
@@ -100,14 +86,10 @@ def _label(path: Path) -> str:
         return str(path)
 
 
-def build_catalog(shared: list, project: list, budget: int) -> tuple:
+def build_catalog(shared: list, project: list, budget: int, head: str = HEAD) -> tuple:
     """(text, level) — ("", None) when there is no note at all."""
     if not shared and not project:
         return "", None
-    head = ("## scribe notes (titles only)\n"
-            "Open a note with Read when its title fits the task; a title missing here can still "
-            "be found with grep. A note's status claims (\"fixed\", \"works\", a version) date from "
-            "its `updated:`; check them against the code before acting on them.")
     index = next((p for p in INDEX_FILES if (PROJECT_ROOT / p).is_file()), None)
     pointer = (f"This project (`.scribe/knowledge`): {len(project)} notes, too many to list. "
                f"Search: grep -ril <word> .scribe/knowledge"
@@ -140,6 +122,36 @@ def build_catalog(shared: list, project: list, budget: int) -> tuple:
     return assemble(0, None, [], f"\n{len(shared)} shared notes in `{_label(SHARED_DIR)}`."), len(LEVELS)
 
 
+def map_section(budget: int) -> str:
+    """The project map under a heading, cut at a line end to fit `budget`."""
+    found = core.read_map(str(PROJECT_ROOT))
+    if not found or not found[1]:
+        return ""
+    rel, text = found
+    title = f"## scribe project map (`{rel}`)\n"
+    if len(title) + len(text) > budget:
+        more = f"\n… (cut; read `{rel}` for the rest)"
+        room = max(0, budget - len(title) - len(more))
+        cut = text[:room + 1]
+        text = (cut[:cut.rfind("\n")] if "\n" in cut else cut[:room]).rstrip() + more
+    return title + text
+
+
+def extra_lines(cache: dict, has_notes: dict) -> list:
+    lines = []
+    problems = cache.get("problems") or []
+    if problems:
+        shown = ", ".join(f"{p[1]} ({p[2]})" for p in problems[:5])
+        more = f" and {len(problems) - 5} more" if len(problems) > 5 else ""
+        lines.append(f"scribe: skipped {len(problems)} trigger(s) that do not parse or compile: "
+                     f"{shown}{more}. Fix them in the note's front matter.")
+    due = core.garden_due(DIRS, has_notes)
+    if due is not None:
+        lines.append(f"scribe: notes not gardened for {due} days. /scribe-garden merges duplicates, "
+                     "re-checks status claims, and proposes notes to prune or promote.")
+    return lines
+
+
 def main() -> None:
     try:
         sys.stdin.read()
@@ -152,8 +164,20 @@ def main() -> None:
         pass
 
     try:
-        shared, project = read_notes(SHARED_DIR), read_notes(KNOWLEDGE_DIR)
-        text, level = build_catalog(shared, project, CATALOG_BUDGET)
+        for scope in ("shared", "project"):
+            core.ensure_log(DIRS, scope)
+        cache = core.load_triggers(DIRS)
+        recent = {scope: core.count(core.read_hits(DIRS, scope), days=core.RANK_DAYS)
+                  for scope in ("shared", "project")}
+        shared = read_notes(SHARED_DIR, recent["shared"])
+        project = read_notes(KNOWLEDGE_DIR, recent["project"])
+        hit = cache.get("notes") or any(n["hits"] for n in shared + project)
+        head = HEAD + (TRIGGER_HEAD if hit else "")
+        map_text = map_section(min(MAP_BUDGET, CATALOG_BUDGET // 2))
+        extras = extra_lines(cache, {"shared": bool(shared), "project": bool(project)})
+        used = sum(len(p) + 2 for p in [map_text] + extras if p)
+        catalog, level = build_catalog(shared, project, CATALOG_BUDGET - used, head)
+        text = "\n\n".join(p for p in [map_text, catalog] + extras if p)
     except Exception as e:  # a broken note must never break the session start
         logging.error("session_start: catalog failed: %s", e)
         sys.exit(0)
@@ -161,8 +185,9 @@ def main() -> None:
     if not text:
         logging.info("session_start: no notes to list")
         sys.exit(0)
-    logging.info("session_start: catalog %d chars, level %s, shared %d, project %d",
-                 len(text), level, len(shared), len(project))
+    logging.info("session_start: %d chars (map %d), level %s, shared %d, project %d, triggers %d",
+                 len(text), len(map_text), level, len(shared), len(project),
+                 len(cache.get("notes") or []))
     print(json.dumps({
         "hookSpecificOutput": {
             "hookEventName": "SessionStart",
