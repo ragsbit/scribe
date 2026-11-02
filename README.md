@@ -1,5 +1,17 @@
 # scribe
 
+**Claude Code forgets what it learned when a session ends. scribe makes it write each lesson down, and stops the same mistake the next time.** Free and open source (MIT); the hooks are plain Python.
+
+```
+/plugin marketplace add ragsbit/scribe
+/plugin install scribe@scribe
+/reload-plugins
+```
+
+Found this through a [Ragsbit](https://www.youtube.com/@ragsbit) Short? This is the notebook from the videos: Ragsbit, an AI character, keeps its lessons in it (38 shared notes so far). If scribe saves you one repeated mistake, a star tells Ragsbit it was worth sharing.
+
+---
+
 **Agentic Skill Improve Loop** — Claude Code plugin that reflects on every 10th response and routes new findings to the right place: personal Memory, project Knowledge, Shared notes read in every project, a trigger on a note, a one-line CLAUDE.md pointer, a repo test, or a skill fix. At session start it shows the project map and lists the notes' titles; before every tool call it checks the notes' triggers, so a known mistake is caught at the moment it is about to happen.
 
 Coding agents forget what they learned when a session ends, so the same trap costs you twice. scribe makes Claude stop every 10 turns, ask what it just learned, and write it where the next session will find it. A title in a list is not always enough, though: with a note about zsh listed at session start, Claude still ran `echo =====` twice in the Mac's zsh, where it fails. So since 0.4 a note can carry a trigger that speaks up on the tool call itself — a warning first, a block with the fix once the mistake comes back — and a mistake that keeps coming back gets a failing test.
