@@ -1,6 +1,6 @@
 ---
 name: scribe-review
-description: Review the current session and route each new finding to one place: Claude Code Memory (personal corrections/preferences), project knowledge (the record folders the project's CLAUDE.md names, default .scribe/knowledge/), shared notes read in every project (~/.claude/scribe/shared/), a trigger on a note that warns or blocks a matching tool call, a one-line pointer in CLAUDE.md, a repo test, or a fix to a skill file. Keeps the project map in step. Triggered by the [SCRIBE] reflection prompt injected every 10 turns by the Stop hook, or invoked manually when something worth recording surfaces mid-conversation.
+description: Review the current session and route each new finding to one place: Claude Code Memory (personal corrections/preferences), project knowledge (the record folders the project's CLAUDE.md names, default .scribe/knowledge/), shared notes read in every project (~/.claude/scribe/shared/), a one-line pointer in CLAUDE.md, a repo test, or a fix to a skill file. Keeps the project map in step. Triggered by the [SCRIBE] reflection prompt injected every 10 turns by the Stop hook, or invoked manually when something worth recording surfaces mid-conversation.
 ---
 
 # /scribe-review
@@ -37,19 +37,14 @@ Do NOT duplicate content between destinations; link instead.
     this project (with its commit or test), keep it here and end the shared note with
     `**Source:**` and the record's absolute path.
 
-→ A trigger on the note (see "Triggers" below)
-  - The mistake shows in a tool input — a command, a file path, a URL, an edit — so a
-    pattern can recognise it before the call runs. A title in a list does not stop a
-    repeat; a trigger speaks up at the moment it happens.
-  - Start with a warning. If the mistake came back after a warning (the [SCRIBE] prompt
-    lists the triggers that fired this session), set `enforce: block` with a `fix:` line.
-
 → One line in CLAUDE.md (and AGENTS.md if present)
   - At session start only titles are listed (shared notes first, then this project's,
     within a size budget; a long project list collapses to one pointer line). Write a
     `description:` that says when the note matters.
-  - If every session must know the rule itself, add one line with its trigger that
-    points to the note.
+  - If every session must know the rule itself, add one line that says when it applies
+    and points to the note.
+  - A mistake that keeps coming back goes to a repo test (below) when a test can catch
+    it; when none can, to one line here that names the mistake and points to its note.
 
 → Repo test
   - A technical mistake that recurred although a note existed: add a test that fails on
@@ -107,32 +102,3 @@ Replace `{{today}}` with the date from the [SCRIBE] prompt.
 
 Default locations: `.scribe/knowledge/<slug>.md` at the project root; shared notes in
 `~/.claude/scribe/shared/<slug>.md`.
-
----
-
-## Triggers
-Optional front matter for a note about a mistake you can see in a tool input. The PreToolUse
-hook checks every tool call against the triggers of all shared and project notes.
-
-```yaml
-triggers:
-  Bash: 'echo\s+='              # tool: regex, searched in every string of the input except `description`
-  Edit.new_string: 'utcnow\('    # tool.field: only that field (here: the replacement text)
-  Write|Edit:                    # several tools; several patterns as a list
-    - '(^|/)\.env$'
-    - 'secrets/'
-enforce: block                   # optional; without it the note is a warning next to the tool result
-fix: "Quote it: echo '====='"   # one line, shown with the warning or the block
-```
-
-- The tool part follows the hook-matcher rules: `*` is every tool, names joined with `|` are exact,
-  anything else is a regex searched in the tool name (`mcp__github__.*`). Shell commands can come
-  as `PowerShell` on Windows: write `Bash|PowerShell` when that matters.
-- The pattern is a Python regex, case-sensitive (start it with `(?i)` to ignore case). Put it in
-  single quotes.
-- Match the mistake, not the fix: `echo\s+=` fires on `echo =====` but not on `echo '====='`.
-  Check a pattern before saving it:
-  `python3 -c "import re; print(bool(re.search(r'echo\s+=', 'echo =====')))"`.
-- A pattern that does not compile is skipped, and session start names the note.
-- Each match is logged (`.scribe/hits.jsonl`, `<shared folder>/.hits.jsonl`); /scribe-garden uses
-  the counts to propose blocks, tests, and notes to prune.

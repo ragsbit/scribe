@@ -28,8 +28,8 @@ python %PY_FLAGS% "%HOOK_DIR%%PY_FILE%"
 exit /b %ERRORLEVEL%
 CMDBLOCK
 
-# Unix: run python directly. No subshells: pre-tool-use runs before every tool
-# call, and -S skips site-packages (the hooks use the standard library only).
+# Unix: run python directly. No subshells: pre-tool-use runs before every Read,
+# and -S skips site-packages (the hooks use the standard library only).
 case "$0" in */*) SCRIPT_DIR="${0%/*}" ;; *) SCRIPT_DIR="." ;; esac
 case "$1" in
   session-start) exec python3 "${SCRIPT_DIR}/session_start.py" ;;

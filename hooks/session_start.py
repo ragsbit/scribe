@@ -1,5 +1,5 @@
 """SessionStart hook — reset turn_count, then put the project map and the note
-titles (catalog) in front of the session, v0.4.0.
+titles (catalog) in front of the session, v0.5.0.
 
 Memory: handled by Claude Code auto-memory (personal).
 Knowledge: whole notes are not injected (until 0.1.2 that grew past 200KB and
@@ -7,11 +7,12 @@ front-loaded every session). Within CATALOG_BUDGET characters the hook puts:
 1. the project map (.scribe/knowledge/MAP.md: key facts, then situation →
    search words → note), cut to MAP_BUDGET;
 2. one line per note: shared notes (all projects, SHARED_DIR) first, then this
-   project's. Notes whose triggers fired in the last 30 days come first, then
-   the newest. When the list does not fit, descriptions get shorter, then the
-   project's titles give way to one pointer line (count + where to search);
-3. a line when a trigger does not compile, and one when /scribe-garden is due.
-It also refreshes the trigger cache that the PreToolUse hook reads.
+   project's, newest first. When the list does not fit, descriptions get
+   shorter, then the project's titles give way to one pointer line (count +
+   where to search);
+3. a line when /scribe-garden is due.
+It also starts the hits logs, so /scribe-garden knows since when Reads of notes
+were counted.
 """
 import json
 import logging
@@ -38,11 +39,9 @@ HEAD = ("## scribe notes (titles only)\n"
         "Open a note with Read when its title fits the task; a title missing here can still "
         "be found with grep or /scribe-search. A note's status claims (\"fixed\", \"works\", a version) date from "
         "its `updated:`; check them against the code before acting on them.")
-TRIGGER_HEAD = (" Notes with `triggers:` also speak up when a tool call matches them (a warning, "
-                "or a block with `enforce: block`); [N hits] counts that over the last 30 days.")
 
 
-def read_notes(folder: Path, hits: dict) -> list:
+def read_notes(folder: Path) -> list:
     notes = []
     if not folder.is_dir():
         return notes
@@ -62,21 +61,18 @@ def read_notes(folder: Path, hits: dict) -> list:
             "desc": " ".join(str(desc).split()),
             "updated": str(meta.get("updated") or meta.get("date") or ""),
             "mtime": f.stat().st_mtime,
-            "hits": hits.get(f.stem, 0),
         })
-    notes.sort(key=lambda n: (n["hits"], n["updated"], n["mtime"]), reverse=True)
+    notes.sort(key=lambda n: (n["updated"], n["mtime"]), reverse=True)
     return notes
 
 
 def _line(note: dict, width: int) -> str:
-    hits = note.get("hits")
-    mark = f" [{hits} hit{'s' if hits > 1 else ''}]" if hits else ""
     desc = note["desc"]
     if not width or not desc or desc == note["name"]:
-        return f"- {note['name']}{mark}"
+        return f"- {note['name']}"
     if len(desc) > width:
         desc = desc[:width - 1].rstrip() + "…"
-    return f"- {note['name']}{mark} — {desc}"
+    return f"- {note['name']} — {desc}"
 
 
 def _label(path: Path) -> str:
@@ -86,7 +82,7 @@ def _label(path: Path) -> str:
         return str(path)
 
 
-def build_catalog(shared: list, project: list, budget: int, head: str = HEAD) -> tuple:
+def build_catalog(shared: list, project: list, budget: int) -> tuple:
     """(text, level) — ("", None) when there is no note at all."""
     if not shared and not project:
         return "", None
@@ -96,7 +92,7 @@ def build_catalog(shared: list, project: list, budget: int, head: str = HEAD) ->
                + (f", or read the index `{index}`." if index else "."))
 
     def assemble(s_width, p_width, s_notes, tail=""):
-        parts = [head]
+        parts = [HEAD]
         if s_notes:
             parts.append("\n".join([f"Shared, all projects (`{_label(SHARED_DIR)}`, {len(shared)}):"]
                                    + [_line(n, s_width) for n in s_notes]) + tail)
@@ -137,18 +133,12 @@ def map_section(budget: int) -> str:
     return title + text
 
 
-def extra_lines(cache: dict, has_notes: dict) -> list:
+def extra_lines(has_notes: dict) -> list:
     lines = []
-    problems = cache.get("problems") or []
-    if problems:
-        shown = ", ".join(f"{p[1]} ({p[2]})" for p in problems[:5])
-        more = f" and {len(problems) - 5} more" if len(problems) > 5 else ""
-        lines.append(f"scribe: skipped {len(problems)} trigger(s) that do not parse or compile: "
-                     f"{shown}{more}. Fix them in the note's front matter.")
     due = core.garden_due(DIRS, has_notes)
     if due is not None:
         lines.append(f"scribe: notes not gardened for {due} days. /scribe-garden merges duplicates, "
-                     "re-checks status claims, and proposes notes to prune or promote.")
+                     "re-checks status claims, and proposes notes to prune.")
     return lines
 
 
@@ -166,17 +156,12 @@ def main() -> None:
     try:
         for scope in ("shared", "project"):
             core.ensure_log(DIRS, scope)
-        cache = core.load_triggers(DIRS)
-        recent = {scope: core.count(core.read_hits(DIRS, scope), days=core.RANK_DAYS)
-                  for scope in ("shared", "project")}
-        shared = read_notes(SHARED_DIR, recent["shared"])
-        project = read_notes(KNOWLEDGE_DIR, recent["project"])
-        hit = cache.get("notes") or any(n["hits"] for n in shared + project)
-        head = HEAD + (TRIGGER_HEAD if hit else "")
+        shared = read_notes(SHARED_DIR)
+        project = read_notes(KNOWLEDGE_DIR)
         map_text = map_section(min(MAP_BUDGET, CATALOG_BUDGET // 2))
-        extras = extra_lines(cache, {"shared": bool(shared), "project": bool(project)})
+        extras = extra_lines({"shared": bool(shared), "project": bool(project)})
         used = sum(len(p) + 2 for p in [map_text] + extras if p)
-        catalog, level = build_catalog(shared, project, CATALOG_BUDGET - used, head)
+        catalog, level = build_catalog(shared, project, CATALOG_BUDGET - used)
         text = "\n\n".join(p for p in [map_text, catalog] + extras if p)
     except Exception as e:  # a broken note must never break the session start
         logging.error("session_start: catalog failed: %s", e)
@@ -185,9 +170,8 @@ def main() -> None:
     if not text:
         logging.info("session_start: no notes to list")
         sys.exit(0)
-    logging.info("session_start: %d chars (map %d), level %s, shared %d, project %d, triggers %d",
-                 len(text), len(map_text), level, len(shared), len(project),
-                 len(cache.get("notes") or []))
+    logging.info("session_start: %d chars (map %d), level %s, shared %d, project %d",
+                 len(text), len(map_text), level, len(shared), len(project))
     print(json.dumps({
         "hookSpecificOutput": {
             "hookEventName": "SessionStart",

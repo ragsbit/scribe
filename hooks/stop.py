@@ -1,16 +1,13 @@
 """Stop hook — every 10 turns, inject SCRIBE review prompt.
 
 stdin JSON: hook_event_name, session_id, stop_hook_active
-The prompt also lists the note triggers that fired in this session, so a
-warning that came back can be turned into a block or a test.
 """
 import json
 import logging
 import sys
 
 from datetime import date
-import _scribe_core as core
-from _scribe_paths import DIRS, LOG_FILE, TURN_COUNT_FILE, KNOWLEDGE_DIR, SHARED_DIR, ensure_dirs
+from _scribe_paths import LOG_FILE, TURN_COUNT_FILE, KNOWLEDGE_DIR, SHARED_DIR, ensure_dirs
 
 ensure_dirs()
 logging.basicConfig(filename=str(LOG_FILE), level=logging.INFO,
@@ -23,26 +20,7 @@ except Exception:
 REVIEW_INTERVAL = 10
 
 
-def _session_hits(session: str) -> str:
-    """'Triggers that fired in this session: ...' or ''."""
-    parts = []
-    try:
-        for scope in ("shared", "project"):
-            events = core.read_hits(DIRS, scope)
-            for kind in core.FIRED:
-                for stem, n in sorted(core.count(events, (kind,), session=session).items()):
-                    parts.append(f"{stem} ({scope}) {n}× {kind}")
-    except Exception as e:  # the review prompt matters more than this list
-        logging.error("stop hook: hits summary failed: %s", e)
-        return ""
-    if not parts:
-        return ""
-    return ("\nTriggers that fired in this session: " + ", ".join(parts) + ".\n"
-            "A warning that fired again → propose `enforce: block` (with `fix:`) for that note;\n"
-            "3 or more fires → also a repo test or a CLAUDE.md line.\n")
-
-
-def _build_prompt(session: str = "") -> str:
+def _build_prompt() -> str:
     today = date.today().isoformat()
     return f"""\
 [SCRIBE] Reflect on the last turns (respond in the user's language). Today: {today}
@@ -72,17 +50,12 @@ Only note titles are listed at session start, so give each note a clear
 description. If every session must know the rule itself, also add one line to
 CLAUDE.md (and AGENTS.md) that points to the note.
 
-→ TRIGGER: a mistake you can see in a tool input (a command, a path, a URL)
-  → give its note `triggers:` (tool: regex); the PreToolUse hook then warns
-  when a matching call comes. If it came back after a warning, add
-  `enforce: block` and a `fix:` line.
-
 → TEST: a technical mistake that recurred although a note existed
   → a repo test that fails on the pattern, plus the note and the CLAUDE.md line.
 
 → SKILL FILE: a skill gave a wrong result and a better way was found
   → fix that skill's SKILL.md.
-{_session_hits(session)}
+
 If anything fits → run /scribe-review. Ask the user first, unless the user or
 the project instructions say records need no approval; then write and report
 in one line.
@@ -117,8 +90,7 @@ def main() -> None:
 
     if turn % REVIEW_INTERVAL == 0:
         logging.info("stop hook: session=%s turn=%d → inject", session_id, turn)
-        print(json.dumps({"decision": "block", "reason": _build_prompt(session_id)},
-                         ensure_ascii=False))
+        print(json.dumps({"decision": "block", "reason": _build_prompt()}, ensure_ascii=False))
     else:
         logging.info("stop hook: session=%s turn=%d → skip (next in %d)",
                      session_id, turn, REVIEW_INTERVAL - (turn % REVIEW_INTERVAL))

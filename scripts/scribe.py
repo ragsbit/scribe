@@ -1,7 +1,7 @@
 """scribe command line, used by the /scribe-search and /scribe-garden skills.
 
   python3 scripts/scribe.py search [--top 3] [--dir DIR]... TERM [TERM...]
-  python3 scripts/scribe.py garden [--days 60] [--promote 3] [--stale 30] [--status-words RE]
+  python3 scripts/scribe.py garden [--days 60] [--stale 30] [--status-words RE]
   python3 scripts/scribe.py garden --done
 
 The project is --project, else CLAUDE_PROJECT_DIR, else the current directory;
@@ -32,7 +32,7 @@ def squash(text):
 
 
 def load(dirs, extra=()):
-    """Every note as a dict: scope, stem, path, name, desc, updated, triggers, fix, lines."""
+    """Every note as a dict: scope, stem, path, name, desc, updated, lines."""
     paths = [("shared", os.path.join(dirs.shared, n)) for n in core.note_files(dirs.shared)]
     paths += [("project", os.path.join(dirs.knowledge, n)) for n in core.note_files(dirs.knowledge)]
     for folder in extra:
@@ -51,15 +51,11 @@ def load(dirs, extra=()):
         except (OSError, UnicodeDecodeError):
             continue
         stem = os.path.splitext(os.path.basename(path))[0]
-        triggers = core.parse_triggers(meta.get("triggers"))
         notes.append({
             "scope": scope, "stem": stem, "path": path,
             "name": str(meta.get("name") or stem),
             "desc": " ".join(str(meta.get("description") or meta.get("title") or "").split()),
             "updated": str(meta.get("updated") or meta.get("date") or ""),
-            "enforce": core.enforce_of(meta),
-            "triggers": triggers,
-            "extra": " ".join([str(meta.get("fix") or "")] + [k + " " + p for k, p in triggers]),
             "lines": body,
         })
     return notes
@@ -73,15 +69,15 @@ def usable(term):
 
 
 def score(note, terms, map_hits):
-    """(score, matched terms). Name 6, description 3, triggers/fix 2, body lines
-    1 each (at most 5) per term; +4 for each further term matched; +5 per map
-    line that names the note and matches a term."""
+    """(score, matched terms). Name 6, description 3, body lines 1 each (at most
+    5) per term; +4 for each further term matched; +5 per map line that names
+    the note and matches a term."""
     name, desc = squash(note["name"] + " " + note["stem"]), squash(note["desc"])
-    extra, body = squash(note["extra"]), [squash(line) for line in note["lines"]]
+    body = [squash(line) for line in note["lines"]]
     total, matched = 0, []
     for term in terms:
         t = squash(term)
-        s = 6 * (t in name) + 3 * (t in desc) + 2 * (t in extra) + min(5, sum(t in b for b in body))
+        s = 6 * (t in name) + 3 * (t in desc) + min(5, sum(t in b for b in body))
         if s:
             total += s
             matched.append(term)
@@ -152,10 +148,7 @@ def duplicates(notes):
     for i, a in enumerate(notes):
         for b in notes[i + 1:]:
             why = []
-            same = {p for _, p in a["triggers"]} & {p for _, p in b["triggers"]}
-            if same:
-                why.append(f"same trigger `{sorted(same)[0]}`")
-            na, nb = words(a["stem"].replace("-", " ").replace("_", " ")), \
+            na, nb =words(a["stem"].replace("-", " ").replace("_", " ")), \
                 words(b["stem"].replace("-", " ").replace("_", " "))
             if len(na & nb) >= 2 and jaccard(na, nb) >= 0.5:
                 why.append(f"names share {', '.join(sorted(na & nb))}")
@@ -191,19 +184,17 @@ def map_report(dirs, notes):
     return out
 
 
-def garden(dirs, days, promote, stale, status_words=""):
+def garden(dirs, days, stale, status_words=""):
     notes = load(dirs)
     status = re.compile(STATUS + (f"|{status_words}" if status_words else ""), re.I)
     by_scope = {s: core.read_hits(dirs, s) for s in ("shared", "project")}
-    fired = {s: core.count(e, days=days) for s, e in by_scope.items()}
-    used = {s: core.count(e, kinds=core.FIRED + ("read",), days=days) for s, e in by_scope.items()}
+    used = {s: core.count(e, days=days) for s, e in by_scope.items()}
     started = {s: next((e.get("t") for e in by_scope[s] if e.get("t")), None) for s in by_scope}
     stale_before = core.now_iso(stale * 86400)[:10]
     old_before = core.now_iso(days * 86400)[:10]
     out = [f"# scribe garden — {core.now_iso()[:10]}",
            f"Notes: shared {sum(n['scope'] == 'shared' for n in notes)} (`{dirs.label(dirs.shared)}`), "
-           f"project {sum(n['scope'] == 'project' for n in notes)} (`.scribe/knowledge`); "
-           f"with triggers {sum(bool(n['triggers']) for n in notes)}."]
+           f"project {sum(n['scope'] == 'project' for n in notes)} (`.scribe/knowledge`)."]
 
     out.append("\n## 1. Possible duplicates (merge?)")
     pairs = duplicates(notes)
@@ -223,35 +214,20 @@ def garden(dirs, days, promote, stale, status_words=""):
     if len(claims) > 40:
         out.append(f"- … {len(claims) - 40} more lines")
 
-    out.append(f"\n## 3. Prune candidates (no trigger hit and not opened in {days} days)")
+    out.append(f"\n## 3. Prune candidates (not opened or updated in {days} days)")
     for scope in ("shared", "project"):
         since = core.days_since(started[scope]) if started[scope] else None
         if since is None or since < days:
             ready = core.now_iso(-(days - (since or 0)) * 86400)[:10]
-            out.append(f"- {scope}: not judged yet; hits are logged since "
+            out.append(f"- {scope}: not judged yet; Reads are logged since "
                        f"{(started[scope] or core.now_iso())[:10]}, enough from {ready}.")
             continue
         cands = [n for n in notes if n["scope"] == scope and not used[scope].get(n["stem"])
                  and (not n["updated"] or n["updated"] < old_before)]
-        out += [f"- {scope}/{n['stem']} (updated {n['updated'] or '?'})"
-                + (" — its trigger never fired" if n["triggers"] else "") for n in cands] \
+        out += [f"- {scope}/{n['stem']} (updated {n['updated'] or '?'})" for n in cands] \
             or [f"- {scope}: none"]
 
-    out.append(f"\n## 4. Promote candidates (trigger fired {promote}+ times in {days} days)")
-    proms = []
-    for n in notes:
-        hits = fired.get(n["scope"], {}).get(n["stem"], 0)
-        if hits >= promote:
-            step = ("a repo test that fails on the pattern, or a CLAUDE.md line"
-                    if n["enforce"] == "block" else "`enforce: block` with a `fix:` line")
-            proms.append(f"- {n['scope']}/{n['stem']}: {hits} hits ({n['enforce'] or 'warn'}) → {step}")
-    out += proms or ["- none"]
-
-    out.append("\n## 5. Trigger problems")
-    out += [f"- {scope}/{stem} `{key}`: {why}" for scope, stem, key, why in
-            core.build_triggers(dirs)[1]] or ["- none"]
-
-    out.append("\n## 6. Project map")
+    out.append("\n## 4. Project map")
     out += map_report(dirs, notes) or ["- fine"]
     return "\n".join(out)
 
@@ -300,9 +276,8 @@ def main(argv=None):
     s.add_argument("terms", nargs="+")
     s.add_argument("--top", type=int, default=3)
     s.add_argument("--dir", action="append", default=[], help="another record folder (recursive)")
-    g = sub.add_parser("garden", help="monthly report: duplicates, status claims, prune, promote")
+    g = sub.add_parser("garden", help="monthly report: duplicates, status claims, prune, project map")
     g.add_argument("--days", type=int, default=60)
-    g.add_argument("--promote", type=int, default=3)
     g.add_argument("--stale", type=int, default=30)
     g.add_argument("--status-words", default="",
                    help="regex of more status words, e.g. in the language the notes are written in")
@@ -314,7 +289,7 @@ def main(argv=None):
     elif args.done:
         print(garden_done(dirs))
     else:
-        print(garden(dirs, args.days, args.promote, args.stale, args.status_words))
+        print(garden(dirs, args.days, args.stale, args.status_words))
 
 
 if __name__ == "__main__":

@@ -31,8 +31,8 @@ python3 "${CLAUDE_PLUGIN_ROOT}/scripts/scribe.py" --project "${CLAUDE_PROJECT_DI
 - Use `python` where `python3` is missing (Windows).
 - If the script cannot run: `grep -rilE "<word>|<word>" ~/.claude/scribe/shared .scribe/knowledge --include="*.md"`.
 
-Names weigh most, then descriptions and triggers, then body lines; a note that matches more of the
-words, or that the project map points to for them, ranks higher.
+Names weigh most, then descriptions, then body lines; a note that matches more of the words, or
+that the project map points to for them, ranks higher.
 
 ## Step 3: Read the top 3
 Read the top three notes in full; read more only when scores tie. Drop a note that clearly does not fit.
