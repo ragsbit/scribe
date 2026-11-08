@@ -9,7 +9,7 @@
     {
       "name": "scribe",
       "description": "Agentic Skill Improve Loop — reflect every 10 turns and route findings to memory, project or shared notes, CLAUDE.md, tests or skills; a project map and note titles at session start",
-      "version": "0.5.0",
+      "version": "0.5.1",
       "source": "./",
       "author": {
         "name": "Ragsbit"

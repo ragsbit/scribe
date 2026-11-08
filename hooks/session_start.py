@@ -1,5 +1,11 @@
-"""SessionStart hook — reset turn_count, then put the project map and the note
-titles (catalog) in front of the session, v0.5.0.
+"""SessionStart hook — update this session's turn count, then put the project
+map and the note titles (catalog) in front of the session, v0.5.1.
+
+Turn count (_scribe_turns): a new conversation (startup, /clear) starts it
+over; a resume keeps it; a compaction keeps it and asks for a review at the
+next Stop. Until 0.5.0 every SessionStart, compactions included, reset one
+counter shared by all sessions of the project, so long sessions rarely
+reached ten turns.
 
 Memory: handled by Claude Code auto-memory (personal).
 Knowledge: whole notes are not injected (until 0.1.2 that grew past 200KB and
@@ -20,8 +26,9 @@ import sys
 from pathlib import Path
 
 import _scribe_core as core
-from _scribe_paths import (CATALOG_BUDGET, DIRS, KNOWLEDGE_DIR, LOG_FILE, MAP_BUDGET,
-                           PROJECT_ROOT, SHARED_DIR, TURN_COUNT_FILE, ensure_dirs)
+import _scribe_turns as turns
+from _scribe_paths import (CATALOG_BUDGET, DIRS, KNOWLEDGE_DIR, LEGACY_TURN_COUNT_FILE, LOG_FILE,
+                           MAP_BUDGET, PROJECT_ROOT, SHARED_DIR, TURNS_DIR, ensure_dirs)
 
 ensure_dirs()
 logging.basicConfig(filename=str(LOG_FILE), level=logging.INFO,
@@ -144,14 +151,22 @@ def extra_lines(has_notes: dict) -> list:
 
 def main() -> None:
     try:
-        sys.stdin.read()
+        raw = sys.stdin.read()
+        data = json.loads(raw) if raw.strip() else {}
     except Exception:
-        pass
+        data = {}
+    if not isinstance(data, dict):
+        data = {}
 
+    session_id, source = data.get("session_id"), data.get("source")
     try:
-        TURN_COUNT_FILE.write_text("0", encoding="utf-8")
-    except Exception:
-        pass
+        done = turns.on_session_start(TURNS_DIR, session_id, source)
+        logging.info("session_start: session=%s source=%s, turn count %s",
+                     str(session_id or "?")[:8], source or "?", done)
+        turns.prune(TURNS_DIR)
+        LEGACY_TURN_COUNT_FILE.unlink(missing_ok=True)
+    except Exception as e:
+        logging.error("session_start: turn count failed: %s", e)
 
     try:
         for scope in ("shared", "project"):

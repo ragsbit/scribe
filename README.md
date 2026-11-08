@@ -18,7 +18,7 @@ Coding agents forget what they learned when a session ends, so the same trap cos
 
 Built by the human behind [Ragsbit](https://www.youtube.com/@ragsbit) in May 2026 and shared on 2026-11-01; Ragsbit, an AI character run by that human, uses it every day.
 
-Version **0.5.0** — see [Changes](#changes).
+Version **0.5.1** — see [Changes](#changes).
 
 ---
 
@@ -28,12 +28,12 @@ Three hooks and three skills, in three layers.
 
 **Find what is known**
 
-1. **SessionStart hook** — Resets the turn counter. Puts the project map first: `.scribe/knowledge/MAP.md`, a short page of key facts and "situation → search words → note" lines, cut to `SCRIBE_MAP_BUDGET` characters (default 1500). Then lists one line per note (title — description): shared notes first, then this project's, newest first, everything within `SCRIBE_CATALOG_BUDGET` characters (default 6000). Whole notes are not injected (until 0.1.2 that grew past 200KB); Claude opens a note when its title fits the task. When the list does not fit, descriptions get shorter, then the project's titles give way to one pointer line (count, where to search, the project's index if it has one). What every session must know goes into CLAUDE.md as one line.
+1. **SessionStart hook** — Starts this session's turn count over on a new conversation (startup, `/clear`); a resume or a compaction keeps it. Puts the project map first: `.scribe/knowledge/MAP.md`, a short page of key facts and "situation → search words → note" lines, cut to `SCRIBE_MAP_BUDGET` characters (default 1500). Then lists one line per note (title — description): shared notes first, then this project's, newest first, everything within `SCRIBE_CATALOG_BUDGET` characters (default 6000). Whole notes are not injected (until 0.1.2 that grew past 200KB); Claude opens a note when its title fits the task. When the list does not fit, descriptions get shorter, then the project's titles give way to one pointer line (count, where to search, the project's index if it has one). What every session must know goes into CLAUDE.md as one line.
 2. **`/scribe-search` skill** — Searches the notes for several spellings of a topic at once (the user's language and English, with and without spaces, transliterations, abbreviations), ranks them with `scripts/scribe.py` (name, description, body, and the project map's pointers), reads the top 3, and checks their status claims ("fixed", "works", a version) against the code — those date from the note's `updated:`. A note that turned out wrong is fixed on the spot.
 
 **Write it down**
 
-3. **Stop hook** — Counts turns. Every 10th turn, injects a `[SCRIBE] Reflect...` prompt asking Claude whether anything from the last turns should be recorded, and where. If nothing fits → Claude responds `"Nothing to record."` and moves on.
+3. **Stop hook** — Counts this session's turns. Every 10th turn, and at the first turn end after the conversation was compacted, injects a `[SCRIBE] Reflect...` prompt asking Claude whether anything from the last turns should be recorded, and where. Each session keeps its own count, so sessions open in the same project neither reset nor share it, and a long session that compacts before ten turns is still reviewed. If nothing fits → Claude responds `"Nothing to record."` and moves on.
 4. **`/scribe-review` skill** — Run by the reflect prompt (or invoked manually). Follows the project's own record rules (CLAUDE.md / AGENTS.md) when it has them, searches before writing so an existing note is updated instead of duplicated, checks status statements before bumping `updated:`, keeps the project map in step, and asks before writing unless the user or the project says records need no approval.
 
 **Measure and tidy**
@@ -102,7 +102,7 @@ When scribe runs in any project, it creates:
     ├── hits.jsonl       ← Reads of this project's notes, for /scribe-garden
     ├── garden_last      ← date of the last /scribe-garden
     ├── hook.log         ← hook execution log
-    └── turn_count       ← Stop hook counter
+    └── turns/*.json     ← Stop hook turn count, one file per session (removed after 14 days)
 ```
 
 Shared notes live outside any project, in `~/.claude/scribe/shared/*.md` (created on first run), with their own `.hits.jsonl` and `.garden_last`.
@@ -141,9 +141,10 @@ scribe/
 ├── hooks/
 │   ├── _scribe_core.py     ← notes, the project map, hits logs (import-light)
 │   ├── _scribe_paths.py    ← shared path resolver
-│   ├── session_start.py    ← resets the turn counter, shows the map, lists note titles
+│   ├── _scribe_turns.py    ← per-session turn count
+│   ├── session_start.py    ← updates the turn count, shows the map, lists note titles
 │   ├── pre_tool_use.py     ← logs a Read of a note as a use (runs on Read only)
-│   ├── stop.py             ← counts turns, injects reflect prompt every 10
+│   ├── stop.py             ← counts turns, injects reflect prompt every 10 and after a compaction
 │   ├── run-hook.cmd        ← cross-platform wrapper (Windows + Unix)
 │   └── hooks.json          ← Claude Code hook registration
 ├── scripts/
@@ -165,6 +166,10 @@ scribe/
 ---
 
 ## Changes
+
+**0.5.1** — The reflect prompt reaches long sessions.
+- Why: every SessionStart reset one turn counter shared by all sessions of a project, and Claude Code runs SessionStart again when it compacts or resumes a conversation. A two-day session whose turns were an hour or two long compacted six times, never counted past 11, and was reviewed once. In a project with several sessions open, a new session reset the others' count, and the prompt came in whichever session ended the tenth turn.
+- Each session now has its own count in `.scribe/turns/`. A new conversation (startup, `/clear`) starts it over, a resume keeps it, and a compaction keeps it and brings the reflect prompt at the next turn end, with a line to read the summary's list of user messages. The old `.scribe/turn_count` is removed at session start.
 
 **0.5.0** — Note triggers removed.
 - Why: in three days of real use they matched about a dozen tool calls and caught one real mistake, an unquoted `echo` of equals signs in zsh that would only have cost a retry. The rest matched text inside scripts, notes and records rather than real commands, and the blocks interrupted work. scribe keeps a feature only if it is useful.

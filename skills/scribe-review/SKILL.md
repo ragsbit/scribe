@@ -1,6 +1,6 @@
 ---
 name: scribe-review
-description: Review the current session and route each new finding to one place: Claude Code Memory (personal corrections/preferences), project knowledge (the record folders the project's CLAUDE.md names, default .scribe/knowledge/), shared notes read in every project (~/.claude/scribe/shared/), a one-line pointer in CLAUDE.md, a repo test, or a fix to a skill file. Keeps the project map in step. Triggered by the [SCRIBE] reflection prompt injected every 10 turns by the Stop hook, or invoked manually when something worth recording surfaces mid-conversation.
+description: Review the current session and route each new finding to one place: Claude Code Memory (personal corrections/preferences), project knowledge (the record folders the project's CLAUDE.md names, default .scribe/knowledge/), shared notes read in every project (~/.claude/scribe/shared/), a one-line pointer in CLAUDE.md, a repo test, or a fix to a skill file. Keeps the project map in step. Triggered by the [SCRIBE] reflection prompt the Stop hook injects every 10 turns and after a compaction, or invoked manually when something worth recording surfaces mid-conversation.
 ---
 
 # /scribe-review

@@ -104,8 +104,14 @@ class SessionStartCatalog(Folders):
         self.assertLess(text.index("- new"), text.index("- old"))
 
     def test_no_output_without_notes_and_counter_reset(self):
-        self.assertIsNone(run("session-start", self.project, self.shared))
-        self.assertEqual((self.project / ".scribe" / "turn_count").read_text(), "0")
+        legacy = self.project / ".scribe" / "turn_count"
+        legacy.parent.mkdir(parents=True, exist_ok=True)
+        legacy.write_text("7")
+        start = '{"session_id": "s-1", "source": "startup"}'
+        self.assertIsNone(run("session-start", self.project, self.shared, stdin=start))
+        state = json.loads((self.project / ".scribe" / "turns" / "s-1.json").read_text())
+        self.assertEqual(state, {"count": 0, "review_next": False})
+        self.assertFalse(legacy.exists())  # the shared counter of 0.5.0 is gone
         self.assertTrue(self.shared.is_dir())
 
     def test_large_project_folds_to_pointer_within_budget(self):
@@ -283,18 +289,101 @@ class PreToolUse(Folders):
             self.assertIsNone(run("pre-tool-use", self.project, self.shared, stdin=stdin), stdin)
 
 
+def start(project, shared, session, source):
+    run("session-start", project, shared,
+        stdin=json.dumps({"session_id": session, "source": source}))
+
+
+def stops(project, shared, session, n):
+    """n Stop events of one session; the 1-based turns that got the reflect prompt."""
+    outs = [run("stop", project, shared, stdin=json.dumps({"session_id": session}))
+            for _ in range(n)]
+    return [i + 1 for i, o in enumerate(outs) if o], outs
+
+
 class StopPrompt(unittest.TestCase):
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.project, self.shared = Path(self._tmp.name) / "proj", Path(self._tmp.name) / "shared"
+        self.project.mkdir()
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
     def test_every_tenth_turn_and_names_shared_folder(self):
-        with tempfile.TemporaryDirectory() as t:
-            project, shared = Path(t) / "proj", Path(t) / "shared"
-            project.mkdir()
-            run("session-start", project, shared)
-            outs = [run("stop", project, shared, stdin='{"session_id": "t"}') for _ in range(20)]
-            self.assertEqual([i + 1 for i, o in enumerate(outs) if o], [10, 20])
-            self.assertEqual(outs[9]["decision"], "block")
-            self.assertIn(str(shared), outs[9]["reason"])
-            self.assertIn("→ TEST:", outs[9]["reason"])
-            self.assertIsNone(run("stop", project, shared, stdin='{"stop_hook_active": true}'))
+        start(self.project, self.shared, "t", "startup")
+        fired, outs = stops(self.project, self.shared, "t", 20)
+        self.assertEqual(fired, [10, 20])
+        self.assertEqual(outs[9]["decision"], "block")
+        self.assertIn(str(self.shared), outs[9]["reason"])
+        self.assertIn("→ TEST:", outs[9]["reason"])
+        self.assertNotIn("compacted", outs[9]["reason"])
+        self.assertIsNone(run("stop", self.project, self.shared,
+                              stdin='{"session_id": "t", "stop_hook_active": true}'))
+        # the prompt's own follow-up Stop is not counted as a turn
+        self.assertEqual(stops(self.project, self.shared, "t", 10)[0], [10])
+
+    def test_compaction_keeps_the_count_and_reviews_at_next_stop(self):
+        """2026-11-07: a long session compacted six times and was reviewed once in two days,
+        because every compaction reset the count before it reached ten."""
+        start(self.project, self.shared, "long", "startup")
+        self.assertEqual(stops(self.project, self.shared, "long", 6)[0], [])
+        start(self.project, self.shared, "long", "compact")
+        fired, outs = stops(self.project, self.shared, "long", 1)
+        self.assertEqual(fired, [1])
+        self.assertIn("compacted", outs[0]["reason"])
+        self.assertIn("→ TEST:", outs[0]["reason"])
+        self.assertEqual(stops(self.project, self.shared, "long", 10)[0], [10])
+
+    def test_compaction_with_few_turns_between_still_reviews(self):
+        """Three turns between compactions: 0.5.0 never reviewed; now each compaction does."""
+        start(self.project, self.shared, "long", "startup")
+        fired = []
+        for _ in range(4):
+            fired.append(stops(self.project, self.shared, "long", 3)[0])
+            start(self.project, self.shared, "long", "compact")
+        self.assertEqual(fired, [[], [1], [1], [1]])
+        self.assertEqual(stops(self.project, self.shared, "long", 1)[0], [1])
+
+    def test_resume_keeps_the_count(self):
+        start(self.project, self.shared, "r", "startup")
+        stops(self.project, self.shared, "r", 6)
+        start(self.project, self.shared, "r", "resume")
+        self.assertEqual(stops(self.project, self.shared, "r", 4)[0], [4])
+
+    def test_startup_and_clear_start_over(self):
+        for source in ("startup", "clear"):
+            start(self.project, self.shared, "c", "startup")
+            stops(self.project, self.shared, "c", 6)
+            start(self.project, self.shared, "c", source)
+            self.assertEqual(stops(self.project, self.shared, "c", 10)[0], [10], source)
+
+    def test_sessions_in_one_project_count_apart(self):
+        """2026-11-05: four sessions of one project added to one counter, and the prompt came
+        in the session that happened to end the tenth turn."""
+        start(self.project, self.shared, "a", "startup")
+        self.assertEqual(stops(self.project, self.shared, "a", 6)[0], [])
+        start(self.project, self.shared, "b", "startup")  # used to reset a's count
+        self.assertEqual(stops(self.project, self.shared, "b", 5)[0], [])
+        self.assertEqual(stops(self.project, self.shared, "a", 4)[0], [4])
+        self.assertEqual(stops(self.project, self.shared, "b", 5)[0], [5])
+
+    def test_bad_input_never_breaks(self):
+        for stdin in ("", "not json", "[1, 2]", '{"session_id": 7}', '{"session_id": "../../x"}'):
+            run("session-start", self.project, self.shared, stdin=stdin)
+            run("stop", self.project, self.shared, stdin=stdin)
+        turns = self.project / ".scribe" / "turns"
+        self.assertTrue(all(f.parent == turns for f in turns.iterdir()))
+        self.assertFalse((self.project.parent / "x.json").exists())
+
+    def test_old_session_files_are_pruned(self):
+        start(self.project, self.shared, "old", "startup")
+        old = self.project / ".scribe" / "turns" / "old.json"
+        then = time.time() - 15 * 86400
+        os.utime(old, (then, then))
+        start(self.project, self.shared, "new", "startup")
+        self.assertFalse(old.exists())
+        self.assertTrue((old.parent / "new.json").exists())
 
     def test_no_word_about_triggers(self):
         """Not even when the hits log still holds this session's warnings, written by 0.4."""

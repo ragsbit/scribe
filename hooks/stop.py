@@ -1,13 +1,16 @@
-"""Stop hook — every 10 turns, inject SCRIBE review prompt.
+"""Stop hook — every 10th turn of this session, and at the first Stop after a
+compaction, inject the SCRIBE review prompt, v0.5.1.
 
 stdin JSON: hook_event_name, session_id, stop_hook_active
+The count is kept per session in .scribe/turns/ (see _scribe_turns).
 """
 import json
 import logging
 import sys
 
 from datetime import date
-from _scribe_paths import LOG_FILE, TURN_COUNT_FILE, KNOWLEDGE_DIR, SHARED_DIR, ensure_dirs
+import _scribe_turns as turns
+from _scribe_paths import LOG_FILE, TURNS_DIR, KNOWLEDGE_DIR, SHARED_DIR, ensure_dirs
 
 ensure_dirs()
 logging.basicConfig(filename=str(LOG_FILE), level=logging.INFO,
@@ -20,11 +23,18 @@ except Exception:
 REVIEW_INTERVAL = 10
 
 
-def _build_prompt() -> str:
+AFTER_COMPACT = """\
+The conversation was compacted since the last review: the earlier turns are in
+the summary above, so read its list of user messages too.
+"""
+
+
+def _build_prompt(after_compact: bool = False) -> str:
     today = date.today().isoformat()
+    compact_note = ("\n" + AFTER_COMPACT) if after_compact else ""
     return f"""\
 [SCRIBE] Reflect on the last turns (respond in the user's language). Today: {today}
-
+{compact_note}
 Route each finding to one place — do NOT duplicate, link instead:
 
 → Claude Code MEMORY (personal, auto-managed):
@@ -62,17 +72,6 @@ in one line.
 If nothing → respond "Nothing to record." only."""
 
 
-def _read_turn() -> int:
-    try:
-        return int(TURN_COUNT_FILE.read_text(encoding="utf-8").strip())
-    except Exception:
-        return 0
-
-
-def _write_turn(n: int) -> None:
-    TURN_COUNT_FILE.write_text(str(n), encoding="utf-8")
-
-
 def main() -> None:
     try:
         raw = sys.stdin.read()
@@ -80,20 +79,32 @@ def main() -> None:
     except Exception as e:
         logging.error("stop stdin parse error: %s", e)
         sys.exit(0)
+    if not isinstance(data, dict):
+        sys.exit(0)
 
     if data.get("stop_hook_active"):
         sys.exit(0)
 
-    session_id = data.get("session_id", "?")[:8]
-    turn = _read_turn() + 1
-    _write_turn(turn)
+    sid = data.get("session_id")
+    label = str(sid or "?")[:8]
+    try:
+        state = turns.load(TURNS_DIR, sid)
+        state["count"] += 1
+        after_compact = state["review_next"]
+        due = after_compact or state["count"] >= REVIEW_INTERVAL
+        turns.save(TURNS_DIR, sid, {"count": 0, "review_next": False} if due else state)
+    except Exception as e:  # a full disk or a locked file must never break a turn
+        logging.error("stop hook: session=%s turn count failed: %s", label, e)
+        sys.exit(0)
 
-    if turn % REVIEW_INTERVAL == 0:
-        logging.info("stop hook: session=%s turn=%d → inject", session_id, turn)
-        print(json.dumps({"decision": "block", "reason": _build_prompt()}, ensure_ascii=False))
+    if due:
+        logging.info("stop hook: session=%s turn=%d → inject%s", label, state["count"],
+                     " (after compact)" if after_compact else "")
+        print(json.dumps({"decision": "block", "reason": _build_prompt(after_compact)},
+                         ensure_ascii=False))
     else:
         logging.info("stop hook: session=%s turn=%d → skip (next in %d)",
-                     session_id, turn, REVIEW_INTERVAL - (turn % REVIEW_INTERVAL))
+                     label, state["count"], REVIEW_INTERVAL - state["count"])
 
     sys.exit(0)
 

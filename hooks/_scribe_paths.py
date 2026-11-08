@@ -16,7 +16,8 @@ PROJECT_ROOT = Path(DIRS.project)
 ROOT = Path(DIRS.scribe)
 KNOWLEDGE_DIR = Path(DIRS.knowledge)
 LOG_FILE = ROOT / "hook.log"
-TURN_COUNT_FILE = ROOT / "turn_count"
+TURNS_DIR = ROOT / "turns"              # one turn-count file per session
+LEGACY_TURN_COUNT_FILE = ROOT / "turn_count"  # the single shared counter until 0.5.0
 
 SHARED_DIR = Path(DIRS.shared)
 
